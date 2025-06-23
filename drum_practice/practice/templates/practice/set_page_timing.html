@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ページタイミング設定 - {{ song.title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .timing-input {
+            max-width: 100px;
+        }
+        
+        .player-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .timing-row {
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2>ページタイミング設定</h2>
+                    <a href="{% url 'practice:song_detail' song.id %}" class="btn btn-outline-secondary">戻る</a>
+                </div>
+                <p class="text-muted">楽曲：{{ song.title }} - {{ song.artist }}</p>
+            </div>
+        </div>
+        
+        <!-- 音声プレイヤー -->
+        <div class="player-section">
+            <h4>音声プレイヤー</h4>
+            <audio id="audio-player" controls style="width: 100%;">
+                <source src="{{ song.audio_file.url }}" type="audio/mpeg">
+            </audio>
+            
+            <div class="mt-3">
+                <button id="play-btn" class="btn btn-success me-2">▶ 再生</button>
+                <button id="pause-btn" class="btn btn-warning me-2">⏸ 停止</button>
+                <button id="reset-btn" class="btn btn-secondary me-2">⏮ 最初から</button>
+                <span id="current-time" class="ms-3 fw-bold">0:00</span>
+            </div>
+        </div>
+        
+        <!-- タイミング設定フォーム -->
+        <div class="card">
+            <div class="card-header">
+                <h4>各ページの開始タイミング（秒）</h4>
+                <p class="mb-0 text-muted">音声を再生しながら、各ページが始まるタイミングで「現在時刻を設定」ボタンを押してください。</p>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    
+                    {% for i in "x"|rjust:sheet.total_pages %}
+                        <div class="timing-row">
+                            <div class="row align-items-center">
+                                <div class="col-md-2">
+                                    <strong>ページ {{ forloop.counter }}</strong>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="input-group">
+                                        <input type="number" 
+                                               step="0.1" 
+                                               name="timing" 
+                                               class="form-control timing-input" 
+                                               placeholder="0.0"
+                                               value="{{ existing_timings|default_if_none:'' }}"
+                                               id="timing-{{ forloop.counter }}">
+                                        <span class="input-group-text">秒</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <button type="button" 
+                                            class="btn btn-outline-primary btn-sm set-current-time" 
+                                            data-page="{{ forloop.counter }}">
+                                        現在時刻を設定
+                                    </button>
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="button" 
+                                            class="btn btn-outline-secondary btn-sm test-timing" 
+                                            data-page="{{ forloop.counter }}">
+                                        テスト再生
+                                    </button>
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="button" 
+                                            class="btn btn-outline-danger btn-sm clear-timing" 
+                                            data-page="{{ forloop.counter }}">
+                                        クリア
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                    
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-4">
+                        <a href="{% url 'practice:song_detail' song.id %}" class="btn btn-secondary">キャンセル</a>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const audioPlayer = document.getElementById('audio-player');
+            const playBtn = document.getElementById('play-btn');
+            const pauseBtn = document.getElementById('pause-btn');
+            const resetBtn = document.getElementById('reset-btn');
+            const currentTimeSpan = document.getElementById('current-time');
+            
+            // 既存のタイミングデータを設定
+            const existingTimings = {{ existing_timings|safe }};
+            for (const [pageNum, timing] of Object.entries(existingTimings)) {
+                const input = document.getElementById('timing-' + pageNum);
+                if (input) {
+                    input.value = timing;
+                }
+            }
+            
+            // 音声プレイヤーの制御
+            playBtn.addEventListener('click', () => audioPlayer.play());
+            pauseBtn.addEventListener('click', () => audioPlayer.pause());
+            resetBtn.addEventListener('click', () => {
+                audioPlayer.currentTime = 0;
+                audioPlayer.pause();
+            });
+            
+            audioPlayer.addEventListener('timeupdate', function() {
+                currentTimeSpan.textContent = formatTime(audioPlayer.currentTime);
+            });
+            
+            // 現在時刻を設定ボタン
+            document.querySelectorAll('.set-current-time').forEach(button => {
+                button.addEventListener('click', function() {
+                    const pageNum = this.dataset.page;
+                    const input = document.getElementById('timing-' + pageNum);
+                    input.value = audioPlayer.currentTime.toFixed(1);
+                });
+            });
+            
+            // テスト再生ボタン
+            document.querySelectorAll('.test-timing').forEach(button => {
+                button.addEventListener('click', function() {
+                    const pageNum = this.dataset.page;
+                    const input = document.getElementById('timing-' + pageNum);
+                    const timing = parseFloat(input.value);
+                    if (!isNaN(timing)) {
+                        audioPlayer.currentTime = timing;
+                        audioPlayer.play();
+                    }
+                });
+            });
+            
+            // クリアボタン
+            document.querySelectorAll('.clear-timing').forEach(button => {
+                button.addEventListener('click', function() {
+                    const pageNum = this.dataset.page;
+                    const input = document.getElementById('timing-' + pageNum);
+                    input.value = '';
+                });
+            });
+            
+            function formatTime(seconds) {
+                const mins = Math.floor(seconds / 60);
+                const secs = Math.floor(seconds % 60);
+                return mins + ':' + (secs < 10 ? '0' : '') + secs;
+            }
+        });
+    </script>
+</body>
+</html>
