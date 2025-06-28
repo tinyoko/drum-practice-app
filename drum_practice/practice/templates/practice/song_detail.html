@@ -56,6 +56,29 @@
             font-weight: 500;
         }
         
+        /* WaveSurferの波形コンテナスタイル */
+        #waveform {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+        
+        /* アクティブなループボタンのスタイル */
+        .btn-outline-primary.active {
+            background-color: #0d6efd;
+            color: white;
+            border-color: #0d6efd;
+        }
+        
+        /* 区間制御ボタンのスタイル調整 */
+        .region-controls {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            margin-top: 10px;
+        }
+        
         /* 時間表示のスタイル */
         .time-display {
             font-family: 'Courier New', monospace;
@@ -84,6 +107,24 @@
             .container-fluid {
                 padding-left: 10px;
                 padding-right: 10px;
+            }
+            
+            /* スマホ対応でボタンサイズ調整 */
+            .btn-control {
+                font-size: 0.85em;
+                padding: 0.375rem 0.5rem;
+            }
+            
+            #waveform {
+                height: 60px;
+            }
+            
+            .region-controls {
+                text-align: center;
+            }
+            
+            .region-controls .btn {
+                margin-bottom: 5px;
             }
         }
     </style>
@@ -114,15 +155,29 @@
                 <div class="player-controls">
                     <h4>音声プレイヤー</h4>
                     {% if song.audio_file %}
-                        <audio id="audio-player" controls style="width: 100%;">
-                            <source src="{{ song.audio_file.url }}" type="audio/mpeg">
-                            お使いのブラウザはHTML5オーディオをサポートしていません。
-                        </audio>
+                        <div id="waveform" style="width: 100%; height: 80px; margin-bottom: 15px;"></div>
                         
                         <div class="mt-3">
-                            <button id="play-btn" class="btn btn-success btn-control me-2">▶ 再生</button>
-                            <button id="pause-btn" class="btn btn-warning btn-control me-2">⏸ 停止</button>
-                            <button id="reset-btn" class="btn btn-secondary btn-control">⏮ 最初から</button>
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <button id="play-btn" class="btn btn-success btn-control me-2">▶ 再生</button>
+                                    <button id="pause-btn" class="btn btn-warning btn-control me-2">⏸ 停止</button>
+                                    <button id="reset-btn" class="btn btn-secondary btn-control me-2">⏮ 最初から</button>
+                                    <button id="play-region-btn" class="btn btn-info btn-control me-2" disabled>🔄 区間再生</button>
+                                </div>
+                                <div class="col-md-4 text-end">
+                                    <button id="toggle-loop-btn" class="btn btn-outline-primary btn-control">🔁 ループ</button>
+                                </div>
+                            </div>
+                            <div class="row mt-2">
+                                <div class="col-12">
+                                    <div class="region-controls">
+                                        <button id="set-region-btn" class="btn btn-sm btn-outline-success me-2">📍 区間設定</button>
+                                        <button id="clear-region-btn" class="btn btn-sm btn-outline-danger me-2" disabled>❌ 区間クリア</button>
+                                        <small class="text-muted ms-2">波形をドラッグして区間を選択できます</small>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         
                         <div class="mt-3 time-display">
@@ -194,12 +249,19 @@
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script>
+    <script type="module">
+        import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js';
+        import RegionsPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.esm.js';
+        
         document.addEventListener('DOMContentLoaded', function() {
-            const audioPlayer = document.getElementById('audio-player');
+            // UI Elements
             const playBtn = document.getElementById('play-btn');
             const pauseBtn = document.getElementById('pause-btn');
             const resetBtn = document.getElementById('reset-btn');
+            const playRegionBtn = document.getElementById('play-region-btn');
+            const toggleLoopBtn = document.getElementById('toggle-loop-btn');
+            const setRegionBtn = document.getElementById('set-region-btn');
+            const clearRegionBtn = document.getElementById('clear-region-btn');
             const currentTimeSpan = document.getElementById('current-time');
             const durationSpan = document.getElementById('duration');
             const pageSelector = document.getElementById('page-selector');
@@ -209,12 +271,17 @@
             const pdfCanvas = document.getElementById('pdf-canvas');
             const pdfLoading = document.getElementById('pdf-loading');
             
+            // State variables
             let currentPage = 1;
             const totalPages = {{ song.sheet.total_pages|default:1 }};
             let pageTimings = [];
             let autoTurnEnabled = false;
             let pdfDoc = null;
             let renderTask = null;
+            let wavesurfer = null;
+            let regionsPlugin = null;
+            let activeRegion = null;
+            let isLooping = false;
             
             // PDF.jsの初期化
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -240,31 +307,92 @@
                 })
                 .catch(error => console.error('Error loading page timings:', error));
             
-            // 音声プレイヤーの制御
-            if (audioPlayer) {
-                playBtn.addEventListener('click', () => audioPlayer.play());
-                pauseBtn.addEventListener('click', () => audioPlayer.pause());
-                resetBtn.addEventListener('click', () => {
-                    audioPlayer.currentTime = 0;
-                    audioPlayer.pause();
-                    currentPage = 1;
-                    pageSelector.value = currentPage;
-                    updatePdfPage();
+            // WaveSurfer.js初期化
+            {% if song.audio_file %}
+            try {
+                regionsPlugin = RegionsPlugin.create();
+                
+                wavesurfer = WaveSurfer.create({
+                    container: '#waveform',
+                    waveColor: '#4285f4',
+                    progressColor: '#1976d2',
+                    cursorColor: '#333',
+                    barWidth: 2,
+                    barRadius: 3,
+                    responsive: true,
+                    height: 80,
+                    normalize: true,
+                    plugins: [regionsPlugin]
                 });
                 
-                audioPlayer.addEventListener('loadedmetadata', function() {
-                    durationSpan.textContent = formatTime(audioPlayer.duration);
+                // 音声ファイル読み込み
+                wavesurfer.load('{{ song.audio_file.url }}');
+                
+                // WaveSurferイベントハンドラー
+                wavesurfer.on('ready', function() {
+                    if (durationSpan) {
+                        durationSpan.textContent = formatTime(wavesurfer.getDuration());
+                    }
+                    console.log('WaveSurfer ready, duration:', wavesurfer.getDuration());
                 });
                 
-                audioPlayer.addEventListener('timeupdate', function() {
-                    currentTimeSpan.textContent = formatTime(audioPlayer.currentTime);
+                wavesurfer.on('audioprocess', function() {
+                    if (currentTimeSpan) {
+                        currentTimeSpan.textContent = formatTime(wavesurfer.getCurrentTime());
+                    }
                     
                     // 自動ページめくり
                     if (autoTurnEnabled && pageTimings.length > 0) {
-                        checkAutoPageTurn(audioPlayer.currentTime);
+                        checkAutoPageTurn(wavesurfer.getCurrentTime());
+                    }
+                    
+                    // ループ再生チェック
+                    if (isLooping && activeRegion && wavesurfer.getCurrentTime() >= activeRegion.end) {
+                        wavesurfer.seekTo(activeRegion.start / wavesurfer.getDuration());
                     }
                 });
+                
+                wavesurfer.on('error', function(error) {
+                    console.error('WaveSurfer error:', error);
+                    alert('音声ファイルの読み込みに失敗しました: ' + error);
+                });
+                
+                // 音声プレイヤーの制御
+                if (playBtn) {
+                    playBtn.addEventListener('click', () => {
+                        if (wavesurfer) {
+                            wavesurfer.play();
+                        }
+                    });
+                }
+                
+                if (pauseBtn) {
+                    pauseBtn.addEventListener('click', () => {
+                        if (wavesurfer) {
+                            wavesurfer.pause();
+                        }
+                    });
+                }
+                
+                if (resetBtn) {
+                    resetBtn.addEventListener('click', () => {
+                        if (wavesurfer) {
+                            wavesurfer.seekTo(0);
+                            wavesurfer.pause();
+                            currentPage = 1;
+                            if (pageSelector) {
+                                pageSelector.value = currentPage;
+                                updatePdfPage();
+                            }
+                        }
+                    });
+                }
+                
+            } catch (error) {
+                console.error('WaveSurfer initialization failed:', error);
+                alert('音声プレイヤーの初期化に失敗しました: ' + error);
             }
+            {% endif %}
             
             // 自動ページめくりの制御
             if (autoTurnCheckbox) {
@@ -359,6 +487,129 @@
                 const secs = Math.floor(seconds % 60);
                 return mins + ':' + (secs < 10 ? '0' : '') + secs;
             }
+            
+            // 区間選択・ループ再生機能の追加
+            {% if song.audio_file %}
+            // 区間選択ボタン
+            if (setRegionBtn) {
+                setRegionBtn.addEventListener('click', function() {
+                    if (wavesurfer && wavesurfer.getDuration() > 0) {
+                        const duration = wavesurfer.getDuration();
+                        const start = duration * 0.3; // 30%の位置から
+                        const end = duration * 0.7;   // 70%の位置まで
+                        
+                        // 既存の区間をクリア
+                        regionsPlugin.clearRegions();
+                        
+                        // 新しい区間を作成
+                        activeRegion = regionsPlugin.addRegion({
+                            start: start,
+                            end: end,
+                            color: 'rgba(255, 215, 0, 0.3)',
+                            drag: true,
+                            resize: true
+                        });
+                        
+                        if (playRegionBtn) playRegionBtn.disabled = false;
+                        if (clearRegionBtn) clearRegionBtn.disabled = false;
+                    }
+                });
+            }
+            
+            // 区間クリアボタン
+            if (clearRegionBtn) {
+                clearRegionBtn.addEventListener('click', function() {
+                    if (regionsPlugin) {
+                        regionsPlugin.clearRegions();
+                        activeRegion = null;
+                        isLooping = false;
+                        if (playRegionBtn) playRegionBtn.disabled = true;
+                        if (clearRegionBtn) clearRegionBtn.disabled = true;
+                        if (toggleLoopBtn) {
+                            toggleLoopBtn.classList.remove('active');
+                            toggleLoopBtn.textContent = '🔁 ループ';
+                        }
+                    }
+                });
+            }
+            
+            // 区間再生ボタン
+            if (playRegionBtn) {
+                playRegionBtn.addEventListener('click', function() {
+                    if (activeRegion && wavesurfer) {
+                        wavesurfer.seekTo(activeRegion.start / wavesurfer.getDuration());
+                        wavesurfer.play();
+                    }
+                });
+            }
+            
+            // ループ切替ボタン
+            if (toggleLoopBtn) {
+                toggleLoopBtn.addEventListener('click', function() {
+                    if (activeRegion) {
+                        isLooping = !isLooping;
+                        if (isLooping) {
+                            this.classList.add('active');
+                            this.textContent = '⏹️ ループ停止';
+                        } else {
+                            this.classList.remove('active');
+                            this.textContent = '🔁 ループ';
+                        }
+                    } else {
+                        alert('まず区間を設定してください。');
+                    }
+                });
+            }
+            
+            // リージョンプラグインのイベント
+            if (regionsPlugin) {
+                regionsPlugin.on('region-created', (region) => {
+                    activeRegion = region;
+                    if (playRegionBtn) playRegionBtn.disabled = false;
+                    if (clearRegionBtn) clearRegionBtn.disabled = false;
+                });
+                
+                regionsPlugin.on('region-updated', (region) => {
+                    activeRegion = region;
+                });
+                
+                regionsPlugin.on('region-removed', () => {
+                    activeRegion = null;
+                    isLooping = false;
+                    if (playRegionBtn) playRegionBtn.disabled = true;
+                    if (clearRegionBtn) clearRegionBtn.disabled = true;
+                    if (toggleLoopBtn) {
+                        toggleLoopBtn.classList.remove('active');
+                        toggleLoopBtn.textContent = '🔁 ループ';
+                    }
+                });
+            }
+            
+            // 波形上でのドラッグ選択
+            if (wavesurfer) {
+                let startTime = null;
+                wavesurfer.on('interaction', (newTime) => {
+                    if (startTime === null) {
+                        startTime = newTime;
+                    } else {
+                        const endTime = newTime;
+                        if (Math.abs(endTime - startTime) > 1) { // 1秒以上の選択の場合
+                            regionsPlugin.clearRegions();
+                            activeRegion = regionsPlugin.addRegion({
+                                start: Math.min(startTime, endTime),
+                                end: Math.max(startTime, endTime),
+                                color: 'rgba(255, 215, 0, 0.3)',
+                                drag: true,
+                                resize: true
+                            });
+                            if (playRegionBtn) playRegionBtn.disabled = false;
+                            if (clearRegionBtn) clearRegionBtn.disabled = false;
+                        }
+                        startTime = null;
+                    }
+                });
+            }
+            {% endif %}
         });
     </script>
 </body>
