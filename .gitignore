@@ -45,3 +45,6 @@ drum_practice_env/
 # IDE / Editor specific
 .idea/
 .vscode/
+
+# AI Assistant Tooling
+.claude/
